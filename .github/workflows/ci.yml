@@ -7,97 +7,115 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Bila ada push baru saat run sebelumnya masih berjalan, batalkan yang lama
+# agar tidak menumpuk di antrean.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   selenium:
     name: Uji Modul Login & Register
-    runs-on: ubuntu-latest
 
-    # ---------------------------------------------------------------------
-    #  Database yang dipakai modul (setara MariaDB pada XAMPP lokal)
-    # ---------------------------------------------------------------------
-    services:
-      mariadb:
-        image: mariadb:10.4
-        env:
-          # Nama MYSQL_* dipakai (bukan MARIADB_*) karena image mariadb:10.4
-          # belum mengenal varian berprefiks MARIADB_.
-          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
-          MYSQL_DATABASE: quiz_pengupil
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=15
-          --health-start-period=30s
+    # Versi runner dipatok (bukan ubuntu-latest) karena workflow ini sengaja
+    # memanfaatkan perangkat lunak BAWAAN image tersebut: PHP 8.3, MySQL 8.0,
+    # Google Chrome, ChromeDriver, dan Python 3. Dengan begitu tidak ada satu
+    # pun action eksternal atau image Docker yang perlu diunduh, sehingga job
+    # lebih cepat dan titik gagalnya jauh lebih sedikit.
+    runs-on: ubuntu-24.04
+
+    # Jaring pengaman: job dihentikan bila melebihi batas ini, tidak
+    # menggantung tanpa batas.
+    timeout-minutes: 20
 
     env:
       BASE_URL: http://127.0.0.1:8000/
       DB_HOST: 127.0.0.1
       DB_USER: root
-      DB_PASS: ""
+      DB_PASS: root          # kredensial MySQL bawaan runner GitHub
       DB_NAME: quiz_pengupil
       HEADLESS: "1"
 
     steps:
+      # -------------------------------------------------------------------
+      #  1. Ambil kode
+      # -------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------------------------
-      #  Aplikasi yang diuji (SUT)
-      # -------------------------------------------------------------------
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.2"
-          extensions: mysqli
-
-      - name: Import skema & data awal database
+      - name: Tampilkan perangkat lunak bawaan runner
         run: |
-          # Pastikan client mysql tersedia, tidak bergantung pada isi image runner.
-          if ! command -v mysql >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq mysql-client
-          fi
+          echo "PHP    : $(php --version | head -1)"
+          echo "Python : $(python3 --version)"
+          echo "Chrome : $(google-chrome --version)"
+          echo "Driver : $(chromedriver --version 2>/dev/null || echo 'via CHROMEWEBDRIVER')"
 
-          # Tunggu database benar-benar menerima koneksi.
+      # -------------------------------------------------------------------
+      #  2. Basis data (MySQL bawaan runner, tanpa service container)
+      # -------------------------------------------------------------------
+      - name: Nyalakan MySQL dan impor basis data
+        run: |
+          sudo systemctl start mysql.service
+
+          # Tunggu sampai MySQL benar-benar menerima koneksi.
           for i in $(seq 1 30); do
-            if mysql -h 127.0.0.1 -P 3306 -u root -e "SELECT 1" >/dev/null 2>&1; then
-              echo "Database siap."
+            if mysql -h 127.0.0.1 -u root -proot -e "SELECT 1" >/dev/null 2>&1; then
+              echo "MySQL siap."
               break
             fi
-            if [ "$i" = "30" ]; then echo "Database tidak merespons."; exit 1; fi
+            if [ "$i" = "30" ]; then echo "MySQL tidak merespons."; exit 1; fi
             sleep 2
           done
 
-          mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil < db/quiz_pengupil.sql
-          mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil -e "SELECT id, username, email FROM users;"
+          # Cadangan saja. Pengujian lokal terhadap MySQL 8.0.46 membuktikan
+          # mysqli PHP 8.3 sudah mampu menangani caching_sha2_password tanpa
+          # penyesuaian apa pun, sehingga baris ini hanya berjaga-jaga bila
+          # konfigurasi MySQL pada runner berbeda. Sengaja dibuat best-effort.
+          mysql -h 127.0.0.1 -u root -proot -e \
+            "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root';" || true
 
-      - name: Sesuaikan host database untuk lingkungan CI
-        # koneksi.php sengaja DIBIARKAN UTUH di repository (byte-for-byte sama
-        # dengan repo asal). Penyesuaian hanya dilakukan di runner, sesaat
-        # sebelum server dijalankan.
+          mysql -h 127.0.0.1 -u root -proot -e \
+            "CREATE DATABASE IF NOT EXISTS quiz_pengupil
+             CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+
+          mysql -h 127.0.0.1 -u root -proot quiz_pengupil < db/quiz_pengupil.sql
+          mysql -h 127.0.0.1 -u root -proot quiz_pengupil \
+            -e "SELECT id, username, email FROM users;"
+
+      # -------------------------------------------------------------------
+      #  3. Penyesuaian lingkungan (BUKAN perubahan kode di repository)
+      # -------------------------------------------------------------------
+      - name: Sesuaikan koneksi.php untuk lingkungan CI
+        # koneksi.php DIBIARKAN UTUH di repository, byte-for-byte sama dengan
+        # repo asal. Penyesuaian hanya terjadi di runner, sesaat sebelum web
+        # server dijalankan, dan tidak pernah di-commit.
         #
-        # Alasannya teknis: di Linux, mysqli_connect('localhost', ...) memaksa
-        # koneksi lewat Unix socket, sedangkan MariaDB di sini berjalan sebagai
-        # service container yang hanya bisa dihubungi lewat TCP 127.0.0.1:3306.
-        # Di XAMPP (Windows) 'localhost' sudah berarti TCP, sehingga file asli
-        # tetap bekerja tanpa penyesuaian apa pun.
+        # Dua penyesuaian diperlukan:
+        #   host     : di Linux, mysqli_connect('localhost') memaksa Unix
+        #              socket; dipakai TCP agar konsisten.
+        #   password : MySQL bawaan runner memakai password 'root',
+        #              sedangkan XAMPP memakai password kosong.
         run: |
           sed -i "s/\$host     = 'localhost';/\$host     = '127.0.0.1';/" koneksi.php
+          sed -i "s/\$password = '';/\$password = 'root';/" koneksi.php
           echo "--- koneksi.php di runner ---"
           cat koneksi.php
 
+      # -------------------------------------------------------------------
+      #  4. Web server (PHP bawaan runner)
+      # -------------------------------------------------------------------
       - name: Jalankan web server
         # output_buffering & display_errors disamakan dengan php.ini bawaan
         # XAMPP supaya perilaku modul di CI identik dengan pengujian lokal.
+        # Tanpa penyamaan ini, TC-REG-03 dan TC-REG-04 akan memberi hasil
+        # berbeda akibat cacat laten D-07.
         run: |
           php -S 127.0.0.1:8000 -t . \
               -d output_buffering=4096 \
               -d display_errors=1 \
               -d error_reporting=E_ALL \
               > php-server.log 2>&1 &
+
           for i in $(seq 1 30); do
             if curl -sf -o /dev/null http://127.0.0.1:8000/login.php; then
               echo "Web server siap."
@@ -108,28 +126,23 @@ jobs:
           echo "Web server gagal start:"; cat php-server.log; exit 1
 
       # -------------------------------------------------------------------
-      #  Harness pengujian
+      #  5. Harness pengujian
       # -------------------------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependency pengujian
-        run: pip install -r requirements.txt
-
-      - name: Setup Google Chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-          install-chromedriver: true
+      - name: Pasang dependency pengujian
+        # Memakai virtual environment karena Python sistem pada Ubuntu 24.04
+        # bersifat externally-managed (PEP 668), sehingga pip install
+        # langsung ke sistem akan ditolak.
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt
+          .venv/bin/pip list
 
       # -------------------------------------------------------------------
-      #  Eksekusi test case
+      #  6. Eksekusi test case
       # -------------------------------------------------------------------
       - name: Jalankan test case Selenium
-        run: pytest --html=report.html --self-contained-html
+        run: .venv/bin/pytest --html=report.html --self-contained-html
 
       - name: Unggah laporan hasil pengujian
         if: always()

@@ -19,15 +19,18 @@ jobs:
       mariadb:
         image: mariadb:10.4
         env:
-          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
-          MARIADB_DATABASE: quiz_pengupil
+          # Nama MYSQL_* dipakai (bukan MARIADB_*) karena image mariadb:10.4
+          # belum mengenal varian berprefiks MARIADB_.
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: quiz_pengupil
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
           --health-interval=10s
           --health-timeout=5s
-          --health-retries=10
+          --health-retries=15
+          --health-start-period=30s
 
     env:
       BASE_URL: http://127.0.0.1:8000/
@@ -52,6 +55,22 @@ jobs:
 
       - name: Import skema & data awal database
         run: |
+          # Pastikan client mysql tersedia, tidak bergantung pada isi image runner.
+          if ! command -v mysql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq mysql-client
+          fi
+
+          # Tunggu database benar-benar menerima koneksi.
+          for i in $(seq 1 30); do
+            if mysql -h 127.0.0.1 -P 3306 -u root -e "SELECT 1" >/dev/null 2>&1; then
+              echo "Database siap."
+              break
+            fi
+            if [ "$i" = "30" ]; then echo "Database tidak merespons."; exit 1; fi
+            sleep 2
+          done
+
           mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil < db/quiz_pengupil.sql
           mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil -e "SELECT id, username, email FROM users;"
 

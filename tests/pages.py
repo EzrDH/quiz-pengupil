@@ -5,6 +5,7 @@ Semua selector DOM dikumpulkan di sini supaya test case membaca sebagai
 langkah-langkah pengujian, bukan sebagai kode otomasi browser.
 """
 
+from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -93,9 +94,35 @@ class BasePage:
         old_body = self.driver.find_element(By.TAG_NAME, "body")
         self.driver.find_element(*self.SUBMIT).click()
 
-        WebDriverWait(self.driver, TIMEOUT).until(EC.staleness_of(old_body))
+        WebDriverWait(self.driver, TIMEOUT).until(self._body_replaced(old_body))
         self._wait_document_ready()
         return self
+
+    @staticmethod
+    def _body_replaced(old_body):
+        """
+        Predikat staleness yang tahan terhadap error CDP non-standar.
+
+        EC.staleness_of() bawaan Selenium mengandalkan tertangkapnya
+        StaleElementReferenceException. Pada beberapa versi Chrome/ChromeDriver
+        (teramati pada Chrome 150 di runner GitHub Actions, tidak terjadi pada
+        Chrome versi XAMPP lokal), ChromeDriver kadang melempar WebDriverException
+        mentah berbunyi "Node with given id does not belong to the document"
+        alih-alih StaleElementReferenceException saat elemen diperiksa persis di
+        tengah pergantian dokumen. Errornya berarti sama persis: elemen lama
+        sudah tidak ada. Predikat ini menangkap keduanya sebagai staleness.
+        """
+        def _predicate(driver):
+            try:
+                old_body.is_enabled()
+                return False
+            except StaleElementReferenceException:
+                return True
+            except WebDriverException as exc:
+                if "does not belong to the document" in str(exc):
+                    return True
+                raise
+        return _predicate
 
     def disable_html5_validation(self):
         """

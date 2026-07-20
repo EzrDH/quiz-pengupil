@@ -82,9 +82,19 @@ CI dijalankan dengan `-d output_buffering=4096`, mengikuti nilai bawaan
 `php.ini` XAMPP. Tanpa penyamaan ini, dua test case akan memberi hasil berbeda
 antara lokal dan CI akibat cacat laten **D-07** (lihat Bagian 7).
 
-Satu-satunya berkas aplikasi yang dimodifikasi adalah `koneksi.php`: nilai
-konfigurasi dibaca dari *environment variable* dengan *default* yang identik
-dengan versi asli. Modul yang diuji tidak tersentuh.
+**Tidak ada satu pun berkas aplikasi asli yang dimodifikasi.** `login.php`,
+`register.php`, `koneksi.php`, `style.css`, `db/quiz_pengupil.sql`, dan
+`readme.md` seluruhnya identik *byte-for-byte* dengan repository asal, dan hal
+ini diverifikasi dengan membandingkan hash objek Git terhadap `upstream/main`.
+
+Satu penyesuaian teknis memang dibutuhkan agar modul dapat berjalan di runner
+Linux, tetapi dilakukan **di dalam pipeline**, bukan di dalam kode: nilai
+`$host` pada `koneksi.php` diganti dari `localhost` menjadi `127.0.0.1` sesaat
+sebelum web server dijalankan. Alasannya, pada Linux pemanggilan
+`mysqli_connect('localhost', ...)` memaksa koneksi melalui Unix socket,
+sedangkan MariaDB di CI berjalan sebagai *service container* yang hanya dapat
+dihubungi lewat TCP. Pada XAMPP (Windows), `localhost` sudah berarti TCP
+sehingga berkas asli bekerja apa adanya tanpa penyesuaian apa pun.
 
 ---
 

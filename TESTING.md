@@ -32,7 +32,7 @@ Rincian lengkap ada pada [docs/Laporan_Pengujian.pdf](docs/Laporan_Pengujian.pdf
 .
 ├─ login.php              # SUT — modul Login (tidak diubah dari repo asal)
 ├─ register.php           # SUT — modul Register (tidak diubah dari repo asal)
-├─ koneksi.php            # konfigurasi DB, dibuat env-aware untuk CI
+├─ koneksi.php            # konfigurasi DB (tidak diubah dari repo asal)
 ├─ style.css
 ├─ index.php              # STUB — dashboard, tujuan redirect kedua modul
 ├─ logout.php             # STUB — pembersih session untuk test session guard

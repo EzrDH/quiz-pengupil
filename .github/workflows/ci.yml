@@ -74,6 +74,21 @@ jobs:
           mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil < db/quiz_pengupil.sql
           mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil -e "SELECT id, username, email FROM users;"
 
+      - name: Sesuaikan host database untuk lingkungan CI
+        # koneksi.php sengaja DIBIARKAN UTUH di repository (byte-for-byte sama
+        # dengan repo asal). Penyesuaian hanya dilakukan di runner, sesaat
+        # sebelum server dijalankan.
+        #
+        # Alasannya teknis: di Linux, mysqli_connect('localhost', ...) memaksa
+        # koneksi lewat Unix socket, sedangkan MariaDB di sini berjalan sebagai
+        # service container yang hanya bisa dihubungi lewat TCP 127.0.0.1:3306.
+        # Di XAMPP (Windows) 'localhost' sudah berarti TCP, sehingga file asli
+        # tetap bekerja tanpa penyesuaian apa pun.
+        run: |
+          sed -i "s/\$host     = 'localhost';/\$host     = '127.0.0.1';/" koneksi.php
+          echo "--- koneksi.php di runner ---"
+          cat koneksi.php
+
       - name: Jalankan web server
         # output_buffering & display_errors disamakan dengan php.ini bawaan
         # XAMPP supaya perilaku modul di CI identik dengan pengujian lokal.

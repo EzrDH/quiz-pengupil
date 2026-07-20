@@ -1,0 +1,112 @@
+name: Selenium Test - Modul Login & Register
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  selenium:
+    name: Uji Modul Login & Register
+    runs-on: ubuntu-latest
+
+    # ---------------------------------------------------------------------
+    #  Database yang dipakai modul (setara MariaDB pada XAMPP lokal)
+    # ---------------------------------------------------------------------
+    services:
+      mariadb:
+        image: mariadb:10.4
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
+          MARIADB_DATABASE: quiz_pengupil
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      BASE_URL: http://127.0.0.1:8000/
+      DB_HOST: 127.0.0.1
+      DB_USER: root
+      DB_PASS: ""
+      DB_NAME: quiz_pengupil
+      HEADLESS: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      #  Aplikasi yang diuji (SUT)
+      # -------------------------------------------------------------------
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: mysqli
+
+      - name: Import skema & data awal database
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil < db/quiz_pengupil.sql
+          mysql -h 127.0.0.1 -P 3306 -u root quiz_pengupil -e "SELECT id, username, email FROM users;"
+
+      - name: Jalankan web server
+        # output_buffering & display_errors disamakan dengan php.ini bawaan
+        # XAMPP supaya perilaku modul di CI identik dengan pengujian lokal.
+        run: |
+          php -S 127.0.0.1:8000 -t . \
+              -d output_buffering=4096 \
+              -d display_errors=1 \
+              -d error_reporting=E_ALL \
+              > php-server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:8000/login.php; then
+              echo "Web server siap."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Web server gagal start:"; cat php-server.log; exit 1
+
+      # -------------------------------------------------------------------
+      #  Harness pengujian
+      # -------------------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependency pengujian
+        run: pip install -r requirements.txt
+
+      - name: Setup Google Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+
+      # -------------------------------------------------------------------
+      #  Eksekusi test case
+      # -------------------------------------------------------------------
+      - name: Jalankan test case Selenium
+        run: pytest --html=report.html --self-contained-html
+
+      - name: Unggah laporan hasil pengujian
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laporan-pengujian
+          path: |
+            report.html
+            php-server.log
+          retention-days: 30
+
+      - name: Tampilkan log web server bila pengujian gagal
+        if: failure()
+        run: cat php-server.log
